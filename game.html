@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,minimum-scale=1,maximum-scale=1" />
-  <title>BounceBall v.1.1 by @windygallery</title>
+  <title>BounceBall v.1.2 by @windygallery</title>
   <style>
     html,body{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;overflow:hidden;background:#f0fbff}
     #ui{font-size:24px;position:fixed;left:6px;right:20px;top:8px;display:flex;gap:10px;align-items:center;z-index:40; font-style: bold;}
@@ -15,9 +15,9 @@
         position: fixed;
         bottom: 20px;   /* distance from bottom */
         right: 20px;    /* distance from right */
-        padding:16px 30px;border-radius:12px;border:none;font-size:32px;background:#ff0000;box-shadow:0 4px 12px rgba(255, 255, 255, 0.12)
+        padding:16px 30px;border-radius:12px;border:none;font-size:32px;background:#ff0000;color: #ffffff;box-shadow:0 4px 12px rgb(75, 75, 75)
     }
-    .bigBtn-btn:hover { background: #fffb00; font-size:32px; color:#000000}
+    .bigBtn-btn:hover { background: #fffb00; font-size:32px; color:#ffffff}
     .resetBtn { padding:8px 15px;border-radius:12px;border:none;font-size:24px;background:#539e55; color: #ffffff;}
     .hide { display: none;}
   </style>
@@ -328,6 +328,54 @@ function playGameOver() {
     if (ballsLeft === 0 && balls.length === 0 && running) endRound();
   }
 
+
+  function drawBall(ctx, x, y, radius) {
+    // Main red gradient
+    const redGradient = ctx.createRadialGradient(
+        x, y, radius * 0.2,
+        x, y, radius
+    );
+    redGradient.addColorStop(0, "rgba(255, 80, 80, 1)");
+    redGradient.addColorStop(0.6, "rgba(255, 0, 0, 1)");
+    redGradient.addColorStop(1, "rgba(150, 0, 0, 1)");
+
+    ctx.fillStyle = redGradient;
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    ctx.fill();
+
+    // White highlight
+    const highlight = ctx.createRadialGradient(
+        x - radius * 0.4,
+        y - radius * 0.4,
+        1,
+        x - radius * 0.4,
+        y - radius * 0.4,
+        radius * 0.8
+    );
+    highlight.addColorStop(0, "rgba(255,255,255,0.9)");
+    highlight.addColorStop(0.25, "rgba(255,255,255,0.4)");
+    highlight.addColorStop(1, "rgba(255,255,255,0)");
+
+    ctx.fillStyle = highlight;
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Shadow
+    const shadow = ctx.createRadialGradient(
+        x, y + radius * 0.6, 1,
+        x, y + radius * 0.6, radius
+    );
+    shadow.addColorStop(0, "rgba(0,0,0,0.4)");
+    shadow.addColorStop(1, "rgba(0,0,0,0)");
+
+    // ctx.fillStyle = shadow;
+    ctx.beginPath();
+    ctx.arc(x, y + radius * 0.6, radius * 0.6, 0, Math.PI, true);
+    ctx.fill();
+  }
+
   function draw(){
     ctx.clearRect(0,0,cssW,cssH);
     const sp = {x: cssW/2, y: 70};
@@ -360,7 +408,11 @@ function playGameOver() {
     }
 
     // balls
-    for (const b of balls){ ctx.beginPath(); ctx.arc(b.x,b.y,BALL_R,0,Math.PI*2); ctx.fillStyle='#FDD835'; ctx.fill(); ctx.lineWidth=2; ctx.strokeStyle='#212121'; ctx.stroke(); }
+    for (const b of balls){ 
+      // ctx.beginPath(); ctx.arc(b.x,b.y,BALL_R,0,Math.PI*2); ctx.fillStyle='#FDD835'; 
+      // ctx.fill(); ctx.lineWidth=2; ctx.strokeStyle='#212121'; ctx.stroke(); 
+       drawBall(ctx, b.x, b.y, BALL_R);
+    }
   }
 
   function loop(now){
@@ -379,7 +431,10 @@ function playGameOver() {
     const vy = Math.sin(ang) * BASE_SHOOT_SPEED * speedFactor;
     balls.push({x:sp.x, y:sp.y, vx, vy});
     ballsLeft--; leftEl.textContent = ballsLeft;
-    if (ballsLeft === 0) shootBtn.disabled = true;
+    if (ballsLeft === 0) {
+      shootBtn.disabled = true;
+      shootBtn.style.display = "none";
+    }
     initAudio();
     playShoot();
   }
@@ -387,14 +442,15 @@ function playGameOver() {
   function endRound(){
     running = false;
     hud.style.display = 'block';
-    hud.innerHTML = `<div style="font-size:54px">Score: ${score}</div><div style="margin-top:18px"><button id='again' class='bigBtn'>Play Again</button></div>`;
+    hud.innerHTML = `<div style="font-size:60px">Score: ${score}</div><br><br><div style="margin-top:18px"><button id='again' class='bigBtn'>Try Again?</button></div>`;
     document.getElementById('again').onclick = ()=>{
       score = 0; ballsLeft = SPEC.ball.count_per_round; balls = []; shapes = [];
       scoreEl.textContent='0'; leftEl.textContent = String(ballsLeft); shootBtn.disabled = false; hud.style.display='none'; running = true; spawnShapes();
+      shootBtn.style.display = "block";
+      resetBtn.style.display = "block";
     };
     initAudio(); 
     playGameOver();
-    resetBtn.style.display = "block";
   }
 
   // pointer to set angle
