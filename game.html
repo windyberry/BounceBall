@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,minimum-scale=1,maximum-scale=1" />
+  <title>BounceBall v.1.0</title>
+  <style>
+    html,body{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;overflow:hidden;background:#f0fbff}
+    #ui{font-size:24px;position:fixed;left:6px;right:20px;top:8px;display:flex;gap:10px;align-items:center;z-index:40; font-style: bold;}
+    #angleVal,#speedVal,#countVal{min-width:44px;text-align:center}
+    canvas{display:block;margin:0 auto;background:linear-gradient(#eaf8ff,#dff4ff);touch-action:none}
+    #hud{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);font-size:56px;font-weight:700;color:#000000;display:none;text-align:center;z-index:60}
+    .small{font-size:13px;color:#333}
+    .bigBtn{
+        position: fixed;
+        bottom: 20px;   /* distance from bottom */
+        right: 20px;    /* distance from right */
+        padding:16px 30px;border-radius:12px;border:none;font-size:32px;background:#ff0000;box-shadow:0 4px 12px rgba(255, 255, 255, 0.12)
+    }
+    .bigBtn-btn:hover { background: #fffb00; font-size:32px; color:#000000}
+    .resetBtn { padding:8px 15px;border-radius:12px;border:none;font-size:24px;background:#539e55; color: #ffffff;}
+    .hide { display: none;}
+  </style>
+</head>
+<body>
+  <div class="hide">
+    <label>Angle: <span id="angleVal">90°</span></label>
+    <input id="angle" type="range" min="10" max="170" value="90">
+
+    <label>Speed: <span id="speedVal">1.0</span></label>
+    <input id="speed" type="range" min="0.3" max="1.5" step="0.1" value="1.0">
+
+    <label>Shapes: <span id="countVal">Auto</span></label>
+    <input id="shapeCount" type="range" min="25" max="50" value="30">
+  </div>
+  <div id="ui">
+    <div style="width:8px"></div>
+    <div>Balls: <span id="left">3</span></div>
+    <button id="reset" class="resetBtn">Random</button>
+    <div style="flex:1"></div>
+    <div>Score: <span id="score">0</span></div>
+  </div>
+  <button id="shoot" class="bigBtn">Shoot</button>
+  <canvas id="c"></canvas>
+  <div id="hud"></div>
+
+<script>
+/*
+  WebAudio helper for short effects.
+  - Call initAudio() in response to a user gesture (required by many browsers).
+  - Use playShoot(), playHit(), playBounce(), playGameOver() from your game code.
+*/
+
+let audioCtx = null;
+let masterGain = null;
+
+function initAudio() {
+  if (audioCtx) return;
+  try {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    masterGain = audioCtx.createGain();
+    masterGain.gain.value = 0.9; // global volume
+    masterGain.connect(audioCtx.destination);
+    // small startup click prevention: resume context on user gesture
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    console.log('Audio initialized');
+  } catch (err) {
+    console.warn('Web Audio not supported', err);
+  }
+}
+
+
+// small utility: create oscillator + gain with ADSR envelope
+function playTone({type='sine', freq=440, duration=0.12, attack=0.005, decay=0.04, sustain=0.5, release=0.04, gain=0.12}) {
+  if (!audioCtx) return;
+  const now = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, now);
+  g.gain.setValueAtTime(0.0001, now);
+
+  osc.connect(g);
+  g.connect(masterGain);
+
+  // ADSR
+  const aEnd = now + attack;
+  g.gain.linearRampToValueAtTime(gain, aEnd); // attack
+  const dEnd = aEnd + decay;
+  g.gain.linearRampToValueAtTime(gain * sustain, dEnd); // decay->sustain
+  // hold until release
+  const releaseAt = now + duration;
+  g.gain.setValueAtTime(gain * sustain, releaseAt);
+  g.gain.linearRampToValueAtTime(0.0001, releaseAt + release);
+
+  osc.start(now);
+  osc.stop(releaseAt + release + 0.02);
+
+  // cleanup (not strictly necessary; GC will handle)
+  osc.onended = () => { osc.disconnect(); g.disconnect(); };
+}
+
+// short noise burst for percussive hits
+function playNoise({duration=0.12, gain=0.08}) {
+  if (!audioCtx) return;
+  const bufferSize = audioCtx.sampleRate * duration;
+  const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i=0;i<bufferSize;i++) data[i] = (Math.random()*2-1) * Math.exp(-3 * i / bufferSize); // decaying noise
+  const src = audioCtx.createBufferSource();
+  src.buffer = buffer;
+  const g = audioCtx.createGain();
+  g.gain.value = gain;
+  src.connect(g); g.connect(masterGain);
+  src.start();
+  src.stop(audioCtx.currentTime + duration + 0.01);
+  src.onended = ()=>{ src.disconnect(); g.disconnect(); };
+}
+
+// When user shoots a ball
+function playShoot() {
+  // short upward-ish whoosh: start higher freq and slide down
+  if (!audioCtx) return;
+  const now = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(900, now);
+  osc.frequency.exponentialRampToValueAtTime(320, now + 0.18);
+  g.gain.setValueAtTime(0.0001, now);
+  g.gain.linearRampToValueAtTime(0.14, now + 0.01);
+  g.gain.linearRampToValueAtTime(0.0001, now + 0.18);
+  osc.connect(g); g.connect(masterGain);
+  osc.start(now); osc.stop(now + 0.2);
+  osc.onended = () => { osc.disconnect(); g.disconnect(); };
+}
+
+// When ball hits a shape
+function playHit() {
+  // bright short tone + noise
+  playTone({type:'triangle', freq:720, duration:0.12, attack:0.003, decay:0.03, sustain:0.3, release:0.02, gain:0.12});
+  setTimeout(()=>playNoise({duration:0.09, gain:0.06}), 10);
+}
+
+// End of round / big success
+function playGameOver() {
+  if (!audioCtx) return;
+  const now = audioCtx.currentTime;
+  // three-note ascending arpeggio
+  const freqs = [330, 440, 660];
+  freqs.forEach((f, i) => {
+    const t = now + i * 0.12;
+    const osc = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(f, t);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(0.18, t + 0.02);
+    g.gain.linearRampToValueAtTime(0.0001, t + 0.24);
+    osc.connect(g); g.connect(masterGain);
+    osc.start(t); osc.stop(t + 0.26);
+    osc.onended = ()=>{ osc.disconnect(); g.disconnect(); };
+  });
+}
+
+</script>
+
+<script>
+(() => {
+  // ----- SPEC (from JSON) -----
+  const SPEC = {
+    orientation: 'portrait',
+    play_area: { dynamic_width: true, width_formula: (h)=>Math.floor(h/2), side_bounce: true },
+    ball: {
+      count_per_round: 3,
+      radius: 12,
+      initial_shoot_speed: 6,
+      speed_increase_on_hit: 1.1,
+      gravity: 0.8,
+      shoot_angle_range_deg: {min:10, max:170},
+      adjustable_speed: true,
+      bottom_disappear: true
+    },
+    shapes: {
+      min_shapes: 30,
+      max_shapes: 50,
+      types: ['circle','square','triangle'],
+      hit_points: {min:1,max:20},
+      remove_when_zero: true,
+      shake_on_hit: true,
+      min_gap_between_shapes_multiplier: 1.1 // times ball.diameter
+    }
+  };
+
+  // ----- DOM & canvas setup -----
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  const angleInput = document.getElementById('angle');
+  const angleVal = document.getElementById('angleVal');
+  const speedInput = document.getElementById('speed');
+  const speedVal = document.getElementById('speedVal');
+  const shapeCountInput = document.getElementById('shapeCount');
+  const countVal = document.getElementById('countVal');
+  const shootBtn = document.getElementById('shoot');
+  const resetBtn = document.getElementById('reset');
+  const scoreEl = document.getElementById('score');
+  const leftEl = document.getElementById('left');
+  const hud = document.getElementById('hud');
+
+  let cssW = 360, cssH = 760; // initial CSS px
+  let DPR = Math.max(1, window.devicePixelRatio || 1);
+
+  function resize() {
+    cssH = window.innerHeight;
+    cssW = Math.min(window.innerWidth, SPEC.play_area.width_formula(cssH));
+    canvas.style.width = cssW + 'px'; canvas.style.height = cssH + 'px';
+    DPR = Math.max(1, window.devicePixelRatio || 1);
+    canvas.width = Math.floor(cssW * DPR); canvas.height = Math.floor(cssH * DPR);
+    ctx.setTransform(DPR,0,0,DPR,0,0); // draw in CSS px
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // ----- Derived physics -----
+  const BALL_R = SPEC.ball.radius; // CSS px
+  const BALL_DIAM = BALL_R * 2;
+  const GRAV = 900 * SPEC.ball.gravity; // px/s^2
+  const BASE_SHOOT_SPEED = 100 * SPEC.ball.initial_shoot_speed; // px/s (6 -> 600)
+
+  // ----- Game state -----
+  let balls = [];
+  let shapes = [];
+  let ballsLeft = SPEC.ball.count_per_round;
+  let score = 0;
+  let running = true;
+  let lastTime = performance.now();
+  let speedFactor = parseFloat(speedInput.value) || 1.0;
+
+  // ----- Shape spawning with min gap enforcement -----
+  function randInt(a,b){return a + Math.floor(Math.random()*(b-a+1));}
+  function desiredShapeCount(){
+    const manual = parseInt(shapeCountInput.value,10);
+    return Math.max(SPEC.shapes.min_shapes, Math.min(SPEC.shapes.max_shapes, manual || SPEC.shapes.min_shapes));
+  }
+
+  function spawnShapes(){
+    shapes = [];
+    const target = desiredShapeCount();
+    countVal.textContent = String(target);
+    const minGap = SPEC.shapes.min_gap_between_shapes_multiplier * BALL_DIAM; // center-to-center extra gap
+    const pad = 60;
+    const minY = Math.floor(cssH * 0.28); const maxY = Math.floor(cssH * 0.72);
+    let attempts = 0;
+    while (shapes.length < target && attempts < target * 40) {
+      attempts++;
+      const type = SPEC.shapes.types[Math.floor(Math.random()*SPEC.shapes.types.length)];
+      const size = 30 + Math.random()*50;
+      const x = pad + Math.random()*(cssW - pad*2);
+      const y = minY + Math.random()*(maxY - minY);
+      // check min gap from others
+      let ok = true;
+      for (const s of shapes){
+        const dx = x - s.x; const dy = y - s.y; const dist = Math.hypot(dx,dy);
+        const minAllowed = (size/2) + (s.size/2) + minGap;
+        if (dist < minAllowed){ ok = false; break; }
+      }
+      if (!ok) continue;
+      const hp = randInt(SPEC.shapes.hit_points.min, SPEC.shapes.hit_points.max);
+      shapes.push({id:Math.random().toString(36).slice(2), type, x, y, size, number:hp, alive:true, shake:0, angle: Math.random()*Math.PI*2});
+    }
+  }
+
+  // ----- Collision helpers -----
+  function reflect(vx,vy,nx,ny){ const d = vx*nx + vy*ny; return {x: vx - 2*d*nx, y: vy - 2*d*ny}; }
+
+  function handleCollisions(ball, dt){
+    // walls
+    if (ball.x - BALL_R < 0){ ball.x = BALL_R; ball.vx = -ball.vx * 0.85; }
+    if (ball.x + BALL_R > cssW){ ball.x = cssW - BALL_R; ball.vx = -ball.vx * 0.85; }
+    if (ball.y - BALL_R < 0){ ball.y = BALL_R; ball.vy = -ball.vy * 0.85; }
+
+    for (const s of shapes){
+      if (!s.alive) continue;
+      // circle-approx collision
+      const dx = ball.x - s.x; const dy = ball.y - s.y; const dist = Math.hypot(dx,dy);
+      const hitDist = BALL_R + s.size/2;
+      if (dist < hitDist){
+        const nx = dx / (dist || 1); const ny = dy / (dist || 1);
+        const overlap = hitDist - dist;
+        ball.x += nx * overlap; ball.y += ny * overlap;
+        // speed boost
+        ball.vx *= SPEC.ball.speed_increase_on_hit;
+        ball.vy *= SPEC.ball.speed_increase_on_hit;
+        // console.log(ball.vx);
+        // reflect with restitution
+        const r = reflect(ball.vx, ball.vy, nx, ny);
+        ball.vx = r.x * 0.9; ball.vy = r.y * 0.9;
+        // scoring & shake
+        if (!s._hitCooldown || performance.now() - s._hitCooldown > 80){
+          s.number = Math.max(0, s.number - 1);
+          score += 1; scoreEl.textContent = score;
+          s._hitCooldown = performance.now();
+          s.shake = 14;
+          if (s.number <= 0) s.alive = false;
+        }
+        initAudio();
+        playHit();
+      }
+    }
+    shapes = shapes.filter(s=>s.alive);
+  }
+
+  // ----- Game update & draw -----
+  function update(dt){
+    for (let i = balls.length-1; i>=0; i--){
+      const b = balls[i];
+      b.vy += GRAV * speedFactor * dt;
+      b.x += b.vx * dt; b.y += b.vy * dt;
+      handleCollisions(b, dt);
+      if (b.y - BALL_R > cssH){ 
+        balls.splice(i,1); 
+        initAudio(); 
+        playGameOver();
+      }
+    }
+    for (const s of shapes) if (s.shake > 0) s.shake = Math.max(0, s.shake - 80 * dt);
+
+    if (ballsLeft === 0 && balls.length === 0 && running) endRound();
+  }
+
+  function draw(){
+    ctx.clearRect(0,0,cssW,cssH);
+    const sp = {x: cssW/2, y: 70};
+
+    // guide line
+    const ang = parseFloat(angleInput.value) * Math.PI/180;
+    ctx.setLineDash([10, 6]);   // <--- THIS MAKES IT DASHED
+    ctx.strokeStyle = '#888888'; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(sp.x,sp.y); ctx.lineTo(sp.x + Math.cos(ang)*160, sp.y + Math.sin(ang)*160); ctx.stroke();
+    ctx.setLineDash([]); // Reset dash so other drawings are normal
+    
+    // shooter
+    ctx.fillStyle = '#ff8a5c'; ctx.beginPath(); ctx.arc(sp.x,sp.y,20,0,Math.PI*2); ctx.fill();
+
+    // shapes: draw rotated, number upright
+    for (const s of shapes){
+      ctx.save();
+      const ox = (Math.random()-0.5) * s.shake; const oy = (Math.random()-0.5) * s.shake;
+      ctx.translate(s.x + ox, s.y + oy);
+      ctx.rotate(s.angle);
+      if (s.type === 'circle'){
+        ctx.beginPath(); ctx.arc(0,0,s.size/2,0,Math.PI*2); ctx.fillStyle='#ffd26b'; ctx.fill(); ctx.lineWidth=2; ctx.strokeStyle='#e6b53c'; ctx.stroke();
+      } else if (s.type === 'square'){
+        ctx.fillStyle='#c1ffd6'; ctx.fillRect(-s.size/2, -s.size/2, s.size, s.size); ctx.lineWidth=2; ctx.strokeStyle='#66cc88'; ctx.strokeRect(-s.size/2, -s.size/2, s.size, s.size);
+      } else {
+        ctx.beginPath(); ctx.moveTo(0,-s.size/2); ctx.lineTo(-s.size/2, s.size/2); ctx.lineTo(s.size/2, s.size/2); ctx.closePath(); ctx.fillStyle='#4FC3F7'; ctx.fill(); ctx.lineWidth=2; ctx.strokeStyle='#2196F3'; ctx.stroke();
+      }
+      ctx.restore();
+      // number upright
+      ctx.fillStyle='#000'; ctx.font = `${Math.max(14, Math.round(s.size/3))}px sans-serif`; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(s.number, s.x, s.y);
+    }
+
+    // balls
+    for (const b of balls){ ctx.beginPath(); ctx.arc(b.x,b.y,BALL_R,0,Math.PI*2); ctx.fillStyle='#FDD835'; ctx.fill(); ctx.lineWidth=2; ctx.strokeStyle='#212121'; ctx.stroke(); }
+  }
+
+  function loop(now){
+    const dt = Math.min(0.033, (now - lastTime)/1000);
+    lastTime = now;
+    if (running){ update(dt); draw(); }
+    requestAnimationFrame(loop);
+  }
+
+  // ----- Controls -----
+  function shoot(){
+    if (ballsLeft <= 0) return;
+    const sp = {x: cssW/2, y:70};
+    const ang = parseFloat(angleInput.value) * Math.PI/180;
+    const vx = Math.cos(ang) * BASE_SHOOT_SPEED * speedFactor;
+    const vy = Math.sin(ang) * BASE_SHOOT_SPEED * speedFactor;
+    balls.push({x:sp.x, y:sp.y, vx, vy});
+    ballsLeft--; leftEl.textContent = ballsLeft;
+    if (ballsLeft === 0) shootBtn.disabled = true;
+    initAudio();
+    playShoot();
+  }
+
+  function endRound(){
+    running = false;
+    hud.style.display = 'block';
+    hud.innerHTML = `<div style="font-size:54px">Score: ${score}</div><div style="margin-top:18px"><button id='again' class='bigBtn'>Play Again</button></div>`;
+    document.getElementById('again').onclick = ()=>{
+      score = 0; ballsLeft = SPEC.ball.count_per_round; balls = []; shapes = [];
+      scoreEl.textContent='0'; leftEl.textContent = String(ballsLeft); shootBtn.disabled = false; hud.style.display='none'; running = true; spawnShapes();
+    };
+    initAudio(); 
+    playGameOver();
+  }
+
+  // pointer to set angle
+  let dragging = false;
+  function setAngleFromPointer(cx, cy){
+    const rect = canvas.getBoundingClientRect();
+    const px = cx - rect.left; const py = cy - rect.top;
+    const s = {x: cssW/2, y:70};
+    let a = Math.atan2(py - s.y, px - s.x) * 180 / Math.PI;
+    if (a < 0) a += 360; a = Math.max(SPEC.ball.shoot_angle_range_deg.min, Math.min(SPEC.ball.shoot_angle_range_deg.max, a));
+    angleInput.value = Math.round(a); angleVal.textContent = angleInput.value + '°';
+  }
+  canvas.addEventListener('pointerdown', e=>{ dragging=true; setAngleFromPointer(e.clientX,e.clientY); });
+  canvas.addEventListener('pointermove', e=>{ if(dragging) setAngleFromPointer(e.clientX,e.clientY); });
+  window.addEventListener('pointerup', ()=>{ dragging=false; });
+
+  // UI events
+  angleInput.addEventListener('input', ()=>{ angleVal.textContent = angleInput.value + '°'; });
+  speedInput.addEventListener('input', ()=>{ speedFactor = parseFloat(speedInput.value); speedVal.textContent = speedFactor.toFixed(1); });
+  shapeCountInput.addEventListener('input', ()=>{ countVal.textContent = shapeCountInput.value; spawnShapes(); });
+  resetBtn.addEventListener('click', ()=>{ spawnShapes(); });
+  shootBtn.addEventListener('click', shoot);
+
+  // init
+  scoreEl.textContent='0'; leftEl.textContent = String(ballsLeft);
+  spawnShapes(); lastTime = performance.now(); requestAnimationFrame(loop);
+
+})();
+</script>
+
+</body>
+</html>
