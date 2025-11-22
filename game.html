@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,minimum-scale=1,maximum-scale=1" />
-  <title>BounceBall v.1.0</title>
+  <title>BounceBall v.1.1 by @windygallery</title>
   <style>
     html,body{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;overflow:hidden;background:#f0fbff}
     #ui{font-size:24px;position:fixed;left:6px;right:20px;top:8px;display:flex;gap:10px;align-items:center;z-index:40; font-style: bold;}
@@ -394,6 +394,7 @@ function playGameOver() {
     };
     initAudio(); 
     playGameOver();
+    resetBtn.style.display = "block";
   }
 
   // pointer to set angle
@@ -415,7 +416,7 @@ function playGameOver() {
   speedInput.addEventListener('input', ()=>{ speedFactor = parseFloat(speedInput.value); speedVal.textContent = speedFactor.toFixed(1); });
   shapeCountInput.addEventListener('input', ()=>{ countVal.textContent = shapeCountInput.value; spawnShapes(); });
   resetBtn.addEventListener('click', ()=>{ spawnShapes(); });
-  shootBtn.addEventListener('click', shoot);
+  shootBtn.addEventListener('click', ()=>{ shoot(); resetBtn.style.display = "none"; });
 
   // init
   scoreEl.textContent='0'; leftEl.textContent = String(ballsLeft);
